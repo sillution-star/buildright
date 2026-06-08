@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BuildRight</title>
+  <title>PMLens</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -93,7 +93,7 @@
 </head>
 <body>
 <div class="shell">
-  <div class="logo"><div class="logo-mark">M</div><span class="logo-text">BuildRight</span></div>
+  <div class="logo"><div class="logo-mark">M</div><span class="logo-text">PMLens</span></div>
 
   <div class="progress" id="progress">
     <div class="progress-step active" id="ps1">1 · Context</div>
@@ -221,7 +221,8 @@
 </div>
 
 <script>
-  const API_BASE = "http://localhost:8000";
+  const API_BASE = "https://buildright-izqv.onrender.com";
+  fetch(`${API_BASE}/health`).catch(() => {});
   let state = { segment:"b2c", productIdea:"", targetCustomer:"", problemHypothesis:"", additionalContext:"", questions:[], numQuestions:15 };
   let excelFile = null;
 

@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
+
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
