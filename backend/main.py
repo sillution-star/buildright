@@ -35,9 +35,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("Loading embedding model...")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
-print("Embedding model ready.")
+HF_API_KEY = os.environ["HF_API_KEY"]
+HF_EMBEDDING_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+
+def get_embedding(text: str) -> list[float]:
+    resp = httpx.post(
+        HF_EMBEDDING_URL,
+        headers={"Authorization": f"Bearer {HF_API_KEY}"},
+        json={"inputs": text},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Embedding error: {resp.text}")
+    result = resp.json()
+    if isinstance(result[0], list):
+        import statistics
+        return [statistics.mean(col) for col in zip(*result[0])]
+    return result
+
+print("BuildRight backend ready.")
 
 
 # ── Models ────────────────────────────────────────────────────────────────
