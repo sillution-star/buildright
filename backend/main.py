@@ -16,9 +16,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from pathlib import Path
+from sentence_transformers import SentenceTransformer
 
-
-load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -35,25 +35,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-HF_API_KEY = os.environ["HF_API_KEY"]
-HF_EMBEDDING_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
-
-def get_embedding(text: str) -> list[float]:
-    resp = httpx.post(
-        HF_EMBEDDING_URL,
-        headers={"Authorization": f"Bearer {HF_API_KEY}"},
-        json={"inputs": text},
-        timeout=15,
-    )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Embedding error: {resp.text}")
-    result = resp.json()
-    if isinstance(result[0], list):
-        import statistics
-        return [statistics.mean(col) for col in zip(*result[0])]
-    return result
-
-print("BuildRight backend ready.")
+print("Loading embedding model...")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+print("Embedding model ready.")
 
 
 # ── Models ────────────────────────────────────────────────────────────────
@@ -69,6 +53,10 @@ class Question(BaseModel):
     q: str
     why: str
     category: str = ""
+    assumption: str = ""
+    strong_answer: str = ""
+    weak_answer: str = ""
+    order: int = 0
 
 class GenerateQuestionsResponse(BaseModel):
     questions: list[Question]
@@ -99,7 +87,7 @@ def extract_pptx_text(data: bytes) -> str:
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[str]:
-    query_embedding = get_embedding(query)
+    query_embedding = embedder.encode(query).tolist()
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -193,69 +181,84 @@ def generate_questions(req: GenerateQuestionsRequest):
     book_chunks = retrieve_chunks(rag_query, top_k=TOP_K)
     book_context = "\n\n---\n\n".join(book_chunks)
 
-    system_prompt = f"""You are a world-class customer discovery coach with deep knowledge of The Mom Test by Rob Fitzpatrick.
+    system_prompt = f"""You are a world-class customer discovery coach with deep knowledge of The Mom Test by Rob Fitzpatrick. You design structured interview guides that a non-expert field interviewer can follow top-to-bottom.
 
-Relevant passages from The Mom Test book to ground your questions:
+Relevant passages from The Mom Test book to ground your work:
 
 <book_excerpts>
 {book_context}
 </book_excerpts>
 
+STEP 1 — Read the product idea and any uploaded document. Privately break the product into the CORE ASSUMPTIONS it depends on to succeed (the beliefs that, if false, would make it fail). Do not output this list separately; instead attach the relevant assumption to each question.
+
+STEP 2 — Build a structured interview that flows as a FUNNEL. Order the {n} questions across these stages, in this exact order (early stages first), so the interviewer moves naturally from broad to specific:
+  1. "Their World" — context about their life/role, zero assumptions
+  2. "Habits Today" — how they actually behave in this area right now
+  3. "Does the Problem Exist" — let the pain surface naturally, never assume it
+  4. "Past Behavior" — concrete past episodes, what they actually did
+  5. "Edge Cases" — the never-tried-it, the rejected, the won't-do-it customer
+  6. "Stakes" — how much this actually matters vs other priorities
+
 THE MOM TEST RULES — apply every one:
-1. NEVER mention the product idea or feature being validated
-2. NEVER ask "would you use this?" or "do you like this?" — compliment-bait
-3. NEVER ask about hypothetical future behavior — only past/present
-4. ALWAYS ask about the customer's life, struggles, past actions
-5. Focus on frequency, severity, and current workarounds
-6. Dig for specific episodes: "tell me about the last time..." "walk me through..."
-7. For B2C: language must be simple, conversational, non-technical
+- NEVER mention, name, or hint at the product or its features
+- NEVER ask "would you..." hypotheticals or "do you like..." compliment-bait
+- ALWAYS ask about real past behavior and concrete episodes
+- You MAY ask about real categories in their life (their actual past experiences, habits, purchases) — that is necessary
+- For B2C: simple, conversational, non-technical language an ordinary person speaks
 
-Generate exactly {n} questions, organised across these research stages:
-- Context & background (their world, role, daily life)
-- Problem discovery (the pain, when it shows up)
-- Current behavior (what they do TODAY, workarounds, tools)
-- Severity & cost (how much the problem costs them in time/money/stress)
-- Past attempts (what they've already tried, searched for, paid for)
+STEP 3 — For EACH question provide a coaching card with these fields:
+- "q": the exact question the interviewer speaks
+- "category": one of "Their World" | "Habits Today" | "Does the Problem Exist" | "Past Behavior" | "Edge Cases" | "Stakes"
+- "order": integer 1..{n} giving the sequence to ask them in
+- "assumption": which product assumption this question secretly tests, in plain words
+- "strong_answer": what a STRONG real-signal answer sounds like (a concrete example sentence + why it's strong)
+- "weak_answer": what a WEAK / red-flag answer sounds like (a concrete example sentence + why it's a red flag)
+- "why": one line of Mom Test logic — why this question gets honest signal
 
-Respond ONLY with a valid JSON array. No preamble, no markdown fences.
+Respond ONLY with a valid JSON array, ordered by "order". No preamble, no markdown fences.
 Format:
 [
-  {{"q": "question text", "why": "which Mom Test rule + what signal you're hunting", "category": "one of: Context | Problem | Current Behavior | Severity | Past Attempts"}}
+  {{"q": "...", "category": "...", "order": 1, "assumption": "...", "strong_answer": "...", "weak_answer": "...", "why": "..."}}
 ]"""
 
-    user_msg = f"""Generate {n} Mom Test-compliant discovery questions.
+    user_msg = f"""Build a structured {n}-question Mom Test interview guide.
 
 Customer type: {req.segment.upper()}
 Target customer: {req.target_customer}
 Problem hypothesis: {req.problem_hypothesis}
 
-UPLOADED DOCUMENT (the product context — read it carefully):
+UPLOADED DOCUMENT (product context — read carefully to extract the real assumptions):
 {req.additional_context[:6000] or 'None provided'}
 
-YOUR JOB:
-1. Read the uploaded document and product idea. Break the product down into the
-   core ASSUMPTIONS it depends on to succeed with the customer. (e.g. "customer
-   will lock money in a deposit", "rejection is a real felt pain", "fuel rewards
-   motivate them", "they trust the bank after being rejected").
-2. Detect the SITUATION from the context — standalone new product, a feature on
-   something they already use, or a cross-sell inside an existing journey — and
-   frame questions to fit it. Do not assume; infer from the document.
-3. Write questions that TEST each assumption through the customer's REAL PAST
-   BEHAVIOR. Past actions only — never "would you" hypotheticals.
-4. You MAY ask about real things in their life that relate to the problem:
-   their history with fixed deposits, locking money away, credit card
-   applications and rejections, how they pay for fuel, how they handle tight
-   months. These are the customer's real history — fair game and necessary.
-5. You must NEVER name, describe, or pitch THIS specific product or its features
-   (no "FD-backed card", no "FIRST Power", no reward structure). Test the
-   assumption through behavior, not the solution.
-6. Spread the {n} questions across the assumptions so each key bet gets probed.
-
 Do NOT reveal or hint at the product idea: "{req.product_idea}"
-Ground every question in the book excerpts AND the uploaded document."""
-    raw = call_groq(system_prompt, user_msg)
+Make every question specific to THIS customer and THIS product's assumptions. Ground them in the book excerpts. Return them ordered as a funnel."""
+
+    raw = call_groq(system_prompt, user_msg, max_tokens=4000)
     data = parse_json_array(raw)
-    questions = [Question(q=i["q"], why=i.get("why", ""), category=i.get("category", "")) for i in data]
+    # sort by order if present
+    data.sort(key=lambda i: i.get("order", 0))
+    questions = []
+    for idx, i in enumerate(data, 1):
+        # Fold the full coaching insight into `why` so it shows on screen without a frontend change
+        insight_parts = []
+        if i.get("assumption"):
+            insight_parts.append(f"🎯 Tests: {i['assumption']}")
+        if i.get("strong_answer"):
+            insight_parts.append(f"✓ Strong: {i['strong_answer']}")
+        if i.get("weak_answer"):
+            insight_parts.append(f"✕ Red flag: {i['weak_answer']}")
+        if i.get("why"):
+            insight_parts.append(f"— {i['why']}")
+        combined_why = "  ".join(insight_parts) if insight_parts else i.get("why", "")
+        questions.append(Question(
+            q=i["q"],
+            why=combined_why,
+            category=i.get("category", ""),
+            assumption=i.get("assumption", ""),
+            strong_answer=i.get("strong_answer", ""),
+            weak_answer=i.get("weak_answer", ""),
+            order=i.get("order", idx),
+        ))
     return GenerateQuestionsResponse(questions=questions, book_excerpts_used=book_chunks[:2])
 
 
@@ -281,7 +284,7 @@ def export_excel(payload: dict):
     ws["A3"].font = Font(italic=True, size=9, name="Arial", color="999999")
 
     header_row = 5
-    headers = ["#", "Category", "Question", "Weightage"] + [f"Customer {i+1}" for i in range(num_customers)]
+    headers = ["#", "Stage", "Question", "What it tests (assumption)", "✓ Strong answer sounds like", "✕ Red flag sounds like", "Weightage"] + [f"Customer {i+1}" for i in range(num_customers)]
     for col, h in enumerate(headers, start=1):
         c = ws.cell(row=header_row, column=col, value=h)
         c.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
@@ -291,28 +294,42 @@ def export_excel(payload: dict):
     thin = Side(style="thin", color="DDDDDD")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
+    FIRST_CUST_COL = 8  # customer answers start at column 8
+
     for idx, q in enumerate(questions):
         r = header_row + 1 + idx
-        ws.cell(row=r, column=1, value=idx + 1).font = Font(name="Arial", size=10)
+        ws.cell(row=r, column=1, value=q.get("order", idx + 1)).font = Font(name="Arial", size=10)
         ws.cell(row=r, column=2, value=q.get("category", "")).font = Font(name="Arial", size=9, color="666666")
         qc = ws.cell(row=r, column=3, value=q.get("q", ""))
-        qc.font = Font(name="Arial", size=10)
+        qc.font = Font(name="Arial", size=10, bold=True)
         qc.alignment = Alignment(wrap_text=True, vertical="top")
-        wc = ws.cell(row=r, column=4, value=3)
+        ac = ws.cell(row=r, column=4, value=q.get("assumption", ""))
+        ac.font = Font(name="Arial", size=9, color="555555")
+        ac.alignment = Alignment(wrap_text=True, vertical="top")
+        sc = ws.cell(row=r, column=5, value=q.get("strong_answer", ""))
+        sc.font = Font(name="Arial", size=9, color="3B6D11")
+        sc.alignment = Alignment(wrap_text=True, vertical="top")
+        rc = ws.cell(row=r, column=6, value=q.get("weak_answer", ""))
+        rc.font = Font(name="Arial", size=9, color="A32D2D")
+        rc.alignment = Alignment(wrap_text=True, vertical="top")
+        wc = ws.cell(row=r, column=7, value=3)
         wc.font = Font(name="Arial", size=10, color="0000FF")
         wc.alignment = Alignment(horizontal="center")
         wc.fill = PatternFill("solid", start_color="FFFDE7")
         for cust in range(num_customers):
-            cell = ws.cell(row=r, column=5 + cust, value="")
+            cell = ws.cell(row=r, column=FIRST_CUST_COL + cust, value="")
             cell.alignment = Alignment(wrap_text=True, vertical="top")
             cell.border = border
 
     ws.column_dimensions["A"].width = 5
-    ws.column_dimensions["B"].width = 16
-    ws.column_dimensions["C"].width = 55
-    ws.column_dimensions["D"].width = 11
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 48
+    ws.column_dimensions["D"].width = 38
+    ws.column_dimensions["E"].width = 42
+    ws.column_dimensions["F"].width = 42
+    ws.column_dimensions["G"].width = 11
     for cust in range(num_customers):
-        ws.column_dimensions[ws.cell(row=header_row, column=5 + cust).column_letter].width = 40
+        ws.column_dimensions[ws.cell(row=header_row, column=FIRST_CUST_COL + cust).column_letter].width = 40
 
     meta = wb.create_sheet("_meta")
     meta["A1"] = "product_idea"; meta["B1"] = product_idea
@@ -348,35 +365,59 @@ async def analyze_excel(file: UploadFile = File(...)):
 
     header_row = None
     for r in range(1, 12):
-        vals = [str(ws.cell(row=r, column=c).value) for c in range(1, 6)]
+        vals = [str(ws.cell(row=r, column=c).value) for c in range(1, 10)]
         if "Question" in vals:
             header_row = r
             break
     if header_row is None:
         raise HTTPException(status_code=422, detail="Could not find the question table. Use the exported template.")
 
+    # Map columns by header name so layout changes never break this
+    q_col = weight_col = None
     customer_cols = []
-    col = 5
+    col = 1
     while True:
         h = ws.cell(row=header_row, column=col).value
-        if not h:
+        if h is None and col > 30:
             break
-        customer_cols.append((col, str(h)))
+        if h is None:
+            col += 1
+            if col > 60:
+                break
+            continue
+        hs = str(h).strip()
+        if hs == "Question":
+            q_col = col
+        elif hs == "Weightage":
+            weight_col = col
+        elif hs.lower().startswith("customer"):
+            customer_cols.append((col, hs))
         col += 1
+        if col > 60:
+            break
+
+    if q_col is None:
+        raise HTTPException(status_code=422, detail="Could not find the Question column. Use the exported template.")
+    if weight_col is None:
+        weight_col = q_col + 4  # fallback
 
     rows = []
     r = header_row + 1
     while True:
-        q = ws.cell(row=r, column=3).value
+        q = ws.cell(row=r, column=q_col).value
         if not q:
             break
-        weight = ws.cell(row=r, column=4).value or 3
+        weight = ws.cell(row=r, column=weight_col).value or 3
+        try:
+            weight = float(weight)
+        except (TypeError, ValueError):
+            weight = 3.0
         answers = {}
         for ccol, cname in customer_cols:
             ans = ws.cell(row=r, column=ccol).value
             if ans and str(ans).strip():
                 answers[cname] = str(ans).strip()
-        rows.append({"question": str(q), "weight": float(weight), "answers": answers})
+        rows.append({"question": str(q), "weight": weight, "answers": answers})
         r += 1
 
     customers = {}
