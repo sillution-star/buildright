@@ -17,11 +17,13 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+HF_API_KEY = os.environ["HF_API_KEY"]
+HF_EMBEDDING_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 TOP_K = 6
 
@@ -34,9 +36,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("Loading embedding model...")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
-print("Embedding model ready.")
+def get_embedding(text: str) -> list[float]:
+    resp = httpx.post(
+        HF_EMBEDDING_URL,
+        headers={"Authorization": f"Bearer {HF_API_KEY}"},
+        json={"inputs": text},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Embedding error: {resp.text}")
+    result = resp.json()
+    if result and isinstance(result[0], list):
+        import statistics
+        return [statistics.mean(col) for col in zip(*result[0])]
+    return result
+
+print("BuildRight backend ready.")
 
 
 # ── Models ────────────────────────────────────────────────────────────────
@@ -86,7 +101,7 @@ def extract_pptx_text(data: bytes) -> str:
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[str]:
-    query_embedding = embedder.encode(query).tolist()
+    query_embedding = get_embedding(query)
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
