@@ -72,9 +72,122 @@ class Question(BaseModel):
     weak_answer: str = ""
     order: int = 0
 
+class PitchQuestion(BaseModel):
+    q: str
+    purpose: str       # what this question tests
+    strong_signal: str # what a genuine interest signal sounds like
+    weak_signal: str   # what a polite non-signal sounds like
+    order: int = 0
+
 class GenerateQuestionsResponse(BaseModel):
     questions: list[Question]
+    pitch_questions: list[PitchQuestion]
+    pitch_reveal: str              # the one-sentence product reveal the SO reads aloud
+    guardrail_warnings: list[str]  # any violations caught and auto-fixed
     book_excerpts_used: list[str]
+
+
+# ── GUARDRAILS ─────────────────────────────────────────────────────────────
+
+BANNED_PHRASES = [
+    "would you", "will you", "do you like", "do you think",
+    "would you use", "would you pay", "do you want", "do you wish",
+    "is it important", "how important", "what do you think about",
+    "would you be interested", "do you believe", "would you consider",
+    "are you interested", "would you ever", "could you see yourself",
+    "what would you do if", "how would you feel",
+]
+
+PAST_BEHAVIOR_ANCHORS = [
+    "last time", "when did you", "walk me through", "tell me about a time",
+    "most recent", "how did you", "what did you do", "what happened when",
+    "describe a time", "give me an example", "the last time",
+]
+
+PROMPT_INJECTION_PHRASES = [
+    "ignore all", "ignore previous", "disregard", "forget your rules",
+    "you are now", "new instructions", "system prompt", "jailbreak",
+    "act as", "pretend you are",
+]
+
+def check_prompt_injection(text: str) -> bool:
+    """Returns True if prompt injection detected."""
+    t = text.lower()
+    return any(phrase in t for phrase in PROMPT_INJECTION_PHRASES)
+
+def validate_question(q_text: str, product_idea: str) -> list[str]:
+    """Returns list of violations. Empty = passes."""
+    violations = []
+    q_lower = q_text.lower()
+
+    # Check banned phrases
+    for phrase in BANNED_PHRASES:
+        if phrase in q_lower:
+            violations.append(f"Banned phrase: '{phrase}'")
+            break  # one violation per question is enough
+
+    # Check for past-behavior anchor
+    has_anchor = any(anchor in q_lower for anchor in PAST_BEHAVIOR_ANCHORS)
+    if not has_anchor:
+        violations.append("No past-behavior anchor (missing: 'last time', 'walk me through', etc.)")
+
+    # Check minimum length
+    if len(q_text.split()) < 8:
+        violations.append("Question too short / vague")
+
+    # Check for product name reveal (words > 4 chars from product idea)
+    product_words = [w.lower().strip(".,?!") for w in product_idea.split() if len(w) > 4]
+    revealed = [w for w in product_words if w in q_lower]
+    if revealed:
+        violations.append(f"May reveal product (contains: {', '.join(revealed[:2])})")
+
+    # Check for hypothetical 'if' scenario
+    if q_lower.strip().startswith("if ") or " if you " in q_lower:
+        violations.append("Hypothetical 'if' scenario — asks about future, not past")
+
+    # Check minimum answer quality signal (answers under 15 words flagged later)
+    return violations
+
+def validate_all_questions(questions: list, product_idea: str, max_bad: int = 3) -> tuple[list, list[str]]:
+    """
+    Runs every question past the guardrail checker.
+    Returns (cleaned_questions, warnings_for_user).
+    Questions with violations are flagged; if > max_bad fail, caller should regenerate.
+    """
+    clean = []
+    warnings = []
+    bad_count = 0
+
+    for q in questions:
+        violations = validate_question(q.q, product_idea)
+        if violations:
+            bad_count += 1
+            warnings.append(f"Q{q.order}: auto-flagged ({'; '.join(violations)}) — removed")
+        else:
+            clean.append(q)
+
+    return clean, warnings, bad_count
+
+def check_input_completeness(req) -> list[str]:
+    """Level 1a — catch lazy inputs before calling the LLM."""
+    issues = []
+    if len(req.product_idea.split()) < 10:
+        issues.append("Product idea is too vague (under 10 words). Describe what it does and who it's for.")
+    if len(req.target_customer.split()) < 5:
+        issues.append("Target customer is too vague. Be specific — age, income, situation, behavior.")
+    if len(req.problem_hypothesis.split()) < 8:
+        issues.append("Problem hypothesis is too short. Name the specific assumptions you want to test.")
+    if check_prompt_injection(req.product_idea) or check_prompt_injection(req.problem_hypothesis):
+        issues.append("Input contains suspicious instructions. Please describe your real product.")
+    return issues
+
+def check_sample_size_warning(num_customers: int) -> str | None:
+    """Level 4c — warn if sample is too small."""
+    if num_customers < 5:
+        return f"⚠️ Only {num_customers} customer(s) — insufficient for conclusions. The Mom Test recommends 10-15 interviews minimum. Treat this as directional only."
+    if num_customers < 10:
+        return f"⚠️ {num_customers} customers is a small sample. Results are directional. Run at least 10 interviews before a build/no-build decision."
+    return None
 
 
 # ── File text extraction ────────────────────────────────────────────────────
@@ -190,6 +303,11 @@ async def extract_file(file: UploadFile = File(...)):
 
 @app.post("/generate-questions", response_model=GenerateQuestionsResponse)
 def generate_questions(req: GenerateQuestionsRequest):
+    # ── GUARDRAIL: Input completeness check ────────────────────────────────
+    input_issues = check_input_completeness(req)
+    if input_issues:
+        raise HTTPException(status_code=422, detail=" | ".join(input_issues))
+
     n = max(5, min(25, req.num_questions))
     rag_query = f"customer discovery questions {req.problem_hypothesis} {req.target_customer} past behavior workarounds commitment"
     book_chunks = retrieve_chunks(rag_query, top_k=TOP_K)
@@ -204,99 +322,156 @@ Relevant passages from The Mom Test book to ground your work:
 </book_excerpts>
 
 STEP 1 — Read the product idea, the problem hypothesis, and the uploaded document. Identify TWO things and keep them strictly separate:
-  (a) WHO the customer is — their identity/context (e.g. "owns a two-wheeler", "runs a small shop", "is a student"). This is ONLY background. Never interrogate the identity object itself.
-  (b) THE PROBLEM TERRITORIES — the real areas of the customer's life and behavior that this specific product is betting on. DERIVE these yourself from the product and hypothesis. Every product has different territories; extract whatever THIS product's are. If the user's problem hypothesis names specific things to focus on, prioritise those.
+  (a) WHO the customer is — their identity/context. This is ONLY background. Never interrogate the identity object itself.
+  (b) THE PROBLEM TERRITORIES — the real areas of the customer's life and behavior that this specific product is betting on. DERIVE these yourself from the product and hypothesis.
 
-Your questions MUST dig into the PROBLEM TERRITORIES (b), using identity (a) only as light context. Do NOT interrogate the identity object (e.g. if they own a bike but the product is about credit, do not ask about the bike — ask about their money behavior).
+Your questions MUST dig into the PROBLEM TERRITORIES (b), using identity (a) only as light context.
 
 STEP 2 — Build a structured FUNNEL of {n} questions in this order:
   1. "Their World" — light context about the relevant part of their life (1-2 questions max)
   2. "Habits Today" — how they actually behave right now in the product's territory
   3. "Does the Problem Exist" — surface the real pain naturally, never assume it
-  4. "Past Behavior" — concrete past episodes inside the problem territory (last time it happened, what they actually did)
-  5. "Edge Cases" — the never-did-it person, the tried-and-gave-up person, the would-refuse person
+  4. "Past Behavior" — concrete past episodes inside the problem territory
+  5. "Edge Cases" — the never-did-it, the tried-and-gave-up, the would-refuse person
   6. "Stakes" — how much this actually matters vs their other priorities
 
-COVERAGE RULE — across the {n} questions, make sure you probe EVERY core assumption the product depends on (the bets that, if false, kill the product). Derive these assumptions from the product yourself. Spread questions so each major assumption is tested by at least one question.
+COVERAGE RULE — spread questions so each major product assumption is tested by at least one question.
 
 THE MOM TEST RULES:
-- You MUST ask about the customer's REAL history and behavior in the problem territory — their actual past actions, purchases, attempts, workarounds. This is their life; asking is required.
-- What is FORBIDDEN is naming, describing, or pitching THE PRODUCT itself or its specific features/offer. Test the underlying behavior and need, never reveal the solution.
+- You MUST ask about real past history and behavior in the problem territory.
+- NEVER name, describe, or pitch THE PRODUCT or its features.
 
-BANNED QUESTION TYPES — these fail the Mom Test. Do NOT produce any question like these:
-- Opinion/importance questions: "How important is X to you?", "What do you think is the most important factor in X?", "What's the most frustrating part of X?" → these invite opinions, not facts. BANNED.
-- Hypothetical/future questions: "What would you do if...?", "Would you ever...?", "How much could you afford to...?" → people lie about the future. BANNED.
-- Product-revealing questions: anything naming a feature of the solution (e.g. "secured card", "locked deposit to get credit"). BANNED.
-- Awareness/preference questions: "Have you ever considered X?", "What do you look for in X?" → BANNED.
+BANNED QUESTION TYPES (strictly forbidden):
+- "How important is X?", "What do you think is the most important...?", "What's the most frustrating part?" → opinion, not fact. BANNED.
+- "What would you do if...?", "Would you ever...?", "How much could you afford to...?" → hypothetical future. BANNED.
+- Anything naming a solution feature. BANNED.
+- "Have you ever considered X?", "What do you look for in X?" → awareness/preference. BANNED.
 
-REQUIRED QUESTION SHAPE — every question must be a SPECIFIC PAST EPISODE:
-- Start most questions with "Tell me about the last time...", "Walk me through what happened when...", "The most recent time you... what did you do?"
-- Each question must extract a real story, not a judgment or a guess.
+REQUIRED SHAPE — every question must be a SPECIFIC PAST EPISODE:
+- Start with "Tell me about the last time...", "Walk me through what happened when...", "The most recent time you... what did you do?"
 
-NO REPETITION — this is critical:
-- Every one of the {n} questions must probe a DISTINCT moment, behavior, or assumption. 
-- Do NOT ask the same thing reworded (e.g. "frustrating part of managing finances" AND "frustrating part of using credit" AND "frustrating part of applying for credit" are the SAME question three times — NEVER do this).
-- Before finalising, mentally check: would any two questions get essentially the same answer? If yes, replace one with a question probing a different assumption or a different past episode.
+NO REPETITION — every question probes a DISTINCT behavior or assumption. Before finalising mentally check: would any two questions get essentially the same answer? If yes, replace one.
 
-- For B2C: simple, conversational language an ordinary person speaks. For B2B: the language of their actual work.
-
-STEP 3 — For EACH question provide a coaching card:
-- "q": the exact question the interviewer speaks
-- "category": one of "Their World" | "Habits Today" | "Does the Problem Exist" | "Past Behavior" | "Edge Cases" | "Stakes"
-- "order": integer 1..{n} giving the sequence to ask them in
-- "assumption": the SPECIFIC product bet this tests — concrete, never circular. (Good: "they will tolerate giving up X to get Y". Bad: "the customer has a need".)
-- "strong_answer": a concrete example answer that would VALIDATE the assumption + why it's strong
-- "weak_answer": a concrete example answer that would KILL the assumption + why it's a red flag
+STEP 3 — For EACH discovery question provide:
+- "q": exact question text
+- "category": one of "Their World"|"Habits Today"|"Does the Problem Exist"|"Past Behavior"|"Edge Cases"|"Stakes"
+- "order": integer 1..{n}
+- "assumption": specific product bet this tests (concrete, never circular)
+- "strong_answer": concrete example of a validating answer + why it's strong
+- "weak_answer": concrete example of a killing answer + why it's a red flag
 - "why": one line of Mom Test logic
 
-Respond ONLY with a valid JSON array, ordered by "order". No preamble, no markdown fences.
-Format:
-[
-  {{"q": "...", "category": "...", "order": 1, "assumption": "...", "strong_answer": "...", "weak_answer": "...", "why": "..."}}
-]"""
+STEP 4 — Also generate a PITCH SECTION with exactly 3 questions to use ONLY AFTER all discovery questions are complete.
+These questions are asked AFTER revealing the product in one sentence.
+Return the pitch section as a separate JSON key "pitch" with:
+- "reveal": the exact one-sentence product reveal the SO reads aloud (frame it around the pain discovered, not a sales pitch)
+- "questions": array of 3 objects with:
+  - "q": the exact question
+  - "purpose": what genuine interest signal this tests
+  - "strong_signal": what a real interest response sounds like
+  - "weak_signal": what a polite non-signal sounds like
+  - "order": 1, 2, or 3
 
-    user_msg = f"""Build a structured {n}-question Mom Test interview guide.
+Pitch Q1 must probe prior search behavior (have they already looked for this?).
+Pitch Q2 must probe social proof (who else do they know with this problem?).
+Pitch Q3 must be a commitment ask (can I take your number / would you want to be first to try it?).
+
+FINAL CHECK: (1) every discovery question is a past episode, not opinion/hypothetical; (2) no two questions get the same answer; (3) no question names the product; (4) pitch section is clearly separate from discovery.
+
+Respond ONLY with a single valid JSON object. No preamble, no markdown fences.
+Format:
+{{
+  "discovery": [
+    {{"q": "...", "category": "...", "order": 1, "assumption": "...", "strong_answer": "...", "weak_answer": "...", "why": "..."}}
+  ],
+  "pitch": {{
+    "reveal": "one sentence the SO speaks to reveal the product",
+    "questions": [
+      {{"q": "...", "purpose": "...", "strong_signal": "...", "weak_signal": "...", "order": 1}}
+    ]
+  }}
+}}"""
+
+    user_msg = f"""Build a structured {n}-question Mom Test interview guide + pitch section.
 
 Customer type: {req.segment.upper()}
-Customer IDENTITY (background only, do NOT interrogate this): {req.target_customer}
-Problem hypothesis / territories to focus on (steer your questions toward this): {req.problem_hypothesis}
+Customer IDENTITY (background only): {req.target_customer}
+Problem hypothesis / focus: {req.problem_hypothesis}
 
-UPLOADED DOCUMENT (product context — extract the real PROBLEM TERRITORIES and ASSUMPTIONS from here):
+UPLOADED DOCUMENT:
 {req.additional_context[:6000] or 'None provided'}
 
-The product being validated (NEVER reveal or hint at it): "{req.product_idea}"
+Product (NEVER reveal): "{req.product_idea}"
 
-Derive the problem territories and core assumptions from the product above — do not assume any fixed domain. Dig into the customer's real behavior in those territories, never their identity object, never the product itself. Ground every question in the book excerpts. Return ordered as a funnel.
+FINAL CHECK before responding: (1) every question is a specific past episode; (2) no two questions get the same answer; (3) no question names the product or its features. If any fails, rewrite it."""
 
-FINAL CHECK before you respond: (1) every question is a specific PAST EPISODE, not an opinion or hypothetical; (2) no two questions would get the same answer; (3) no question names the product or its features. If any question fails, rewrite it."""
-
-    raw = call_groq(system_prompt, user_msg, max_tokens=4000)
-    data = parse_json_array(raw)
-    # sort by order if present
-    data.sort(key=lambda i: i.get("order", 0))
+    # ── LLM call with retry on too many guardrail failures ─────────────────
+    all_warnings = []
     questions = []
-    for idx, i in enumerate(data, 1):
-        # Fold the full coaching insight into `why` so it shows on screen without a frontend change
-        insight_parts = []
-        if i.get("assumption"):
-            insight_parts.append(f"🎯 Tests: {i['assumption']}")
-        if i.get("strong_answer"):
-            insight_parts.append(f"✓ Strong: {i['strong_answer']}")
-        if i.get("weak_answer"):
-            insight_parts.append(f"✕ Red flag: {i['weak_answer']}")
-        if i.get("why"):
-            insight_parts.append(f"— {i['why']}")
-        combined_why = "  ".join(insight_parts) if insight_parts else i.get("why", "")
-        questions.append(Question(
-            q=i["q"],
-            why=combined_why,
-            category=i.get("category", ""),
-            assumption=i.get("assumption", ""),
-            strong_answer=i.get("strong_answer", ""),
-            weak_answer=i.get("weak_answer", ""),
-            order=i.get("order", idx),
+    pitch_questions = []
+    pitch_reveal = ""
+
+    for attempt in range(2):  # max 2 attempts
+        raw = call_groq(system_prompt, user_msg, max_tokens=4500)
+        parsed = parse_json_object(raw)
+
+        discovery_raw = parsed.get("discovery", [])
+        pitch_raw = parsed.get("pitch", {})
+
+        # Build question objects
+        discovery_raw.sort(key=lambda i: i.get("order", 0))
+        candidate_questions = []
+        for idx, i in enumerate(discovery_raw, 1):
+            insight_parts = []
+            if i.get("assumption"):
+                insight_parts.append(f"🎯 Tests: {i['assumption']}")
+            if i.get("strong_answer"):
+                insight_parts.append(f"✓ Strong: {i['strong_answer']}")
+            if i.get("weak_answer"):
+                insight_parts.append(f"✕ Red flag: {i['weak_answer']}")
+            if i.get("why"):
+                insight_parts.append(f"— {i['why']}")
+            combined_why = "  ".join(insight_parts) if insight_parts else i.get("why", "")
+            candidate_questions.append(Question(
+                q=i["q"],
+                why=combined_why,
+                category=i.get("category", ""),
+                assumption=i.get("assumption", ""),
+                strong_answer=i.get("strong_answer", ""),
+                weak_answer=i.get("weak_answer", ""),
+                order=i.get("order", idx),
+            ))
+
+        # ── GUARDRAIL: Run banned-phrase + past-behavior checks ──────────
+        clean_qs, warnings, bad_count = validate_all_questions(candidate_questions, req.product_idea)
+        all_warnings.extend(warnings)
+
+        if bad_count <= 2 or attempt == 1:
+            # Accept what we have (either good enough, or second attempt)
+            questions = clean_qs if clean_qs else candidate_questions
+            break
+        # else: retry with stricter tone in user message
+        user_msg += "\n\nIMPORTANT: Previous attempt had questions violating Mom Test rules. Every question MUST start with 'Tell me about the last time' or 'Walk me through'. No exceptions."
+
+    # Build pitch section
+    pitch_reveal = pitch_raw.get("reveal", "")
+    for pq in pitch_raw.get("questions", []):
+        pitch_questions.append(PitchQuestion(
+            q=pq.get("q", ""),
+            purpose=pq.get("purpose", ""),
+            strong_signal=pq.get("strong_signal", ""),
+            weak_signal=pq.get("weak_signal", ""),
+            order=pq.get("order", 0),
         ))
-    return GenerateQuestionsResponse(questions=questions, book_excerpts_used=book_chunks[:2])
+    pitch_questions.sort(key=lambda x: x.order)
+
+    return GenerateQuestionsResponse(
+        questions=questions,
+        pitch_questions=pitch_questions,
+        pitch_reveal=pitch_reveal,
+        guardrail_warnings=all_warnings,
+        book_excerpts_used=book_chunks[:2],
+    )
 
 
 @app.post("/export-excel")
@@ -520,6 +695,10 @@ Score each customer and give the aggregate. Ground analysis in the book excerpts
     report = parse_json_object(raw)
     report["num_customers"] = len(customers)
     report["book_excerpts_used"] = book_chunks[:2]
+    # ── GUARDRAIL: Sample size warning ──────────────────────────────────────
+    sample_warning = check_sample_size_warning(len(customers))
+    if sample_warning:
+        report["sample_warning"] = sample_warning
     return report
 
 
@@ -584,4 +763,8 @@ Score this customer. Ground analysis in the book excerpts."""
     report = parse_json_object(raw)
     report["num_customers"] = 1
     report["book_excerpts_used"] = book_chunks[:2]
+    # ── GUARDRAIL: Sample size warning ──────────────────────────────────────
+    sample_warning = check_sample_size_warning(1)
+    if sample_warning:
+        report["sample_warning"] = sample_warning
     return report

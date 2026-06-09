@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PMLens</title>
+  <title>Mom Test Coach</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -74,7 +74,16 @@
     .insight-row:last-child { border-bottom:none; }
     .insight-icon { flex-shrink:0; font-size:15px; margin-top:1px; }
     .recommendation { font-size:14px; line-height:1.75; font-family:'Helvetica Neue',sans-serif; }
-    .error-box { background:var(--nogo-bg); color:var(--nogo); border-radius:var(--radius-sm); padding:10px 14px; font-size:13px; margin-top:1rem; font-family:'Helvetica Neue',sans-serif; }
+    .pitch-divider { background:var(--text); color:#fff; border-radius:var(--radius-sm); padding:12px 16px; margin:1.5rem 0 1rem; font-family:'Helvetica Neue',sans-serif; }
+    .pitch-divider-title { font-size:13px; font-weight:bold; margin-bottom:4px; }
+    .pitch-divider-sub { font-size:11px; opacity:0.7; }
+    .pitch-reveal { background:#FFFDE7; border:1px solid #F0E040; border-radius:var(--radius-sm); padding:12px 14px; margin-bottom:1rem; font-family:'Helvetica Neue',sans-serif; }
+    .pitch-reveal-label { font-size:10px; letter-spacing:0.06em; text-transform:uppercase; color:#854F0B; margin-bottom:6px; }
+    .pitch-reveal-text { font-size:14px; color:var(--text); font-style:italic; line-height:1.6; }
+    .pitch-q-card { background:#FFF8E1; border:1px solid #F0E040; border-radius:var(--radius-sm); padding:1rem 1.25rem; margin-bottom:10px; }
+    .guardrail-box { background:#FFF3E0; border:1px solid #FFB74D; border-radius:var(--radius-sm); padding:10px 14px; margin-bottom:1rem; font-family:'Helvetica Neue',sans-serif; font-size:12px; color:#E65100; }
+    .guardrail-label { font-weight:bold; margin-bottom:4px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }
+    .sample-warning { background:#FFF3E0; border:1px solid #FFB74D; border-radius:var(--radius-sm); padding:12px 14px; margin-bottom:1rem; font-size:13px; font-family:'Helvetica Neue',sans-serif; color:#E65100; }
     .divider { height:1px; background:var(--border); margin:1.5rem 0; }
     .cust-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); font-family:'Helvetica Neue',sans-serif; }
     .cust-row:last-child { border-bottom:none; }
@@ -93,7 +102,7 @@
 </head>
 <body>
 <div class="shell">
-  <div class="logo"><div class="logo-mark">M</div><span class="logo-text">PMLens</span></div>
+  <div class="logo"><div class="logo-mark">M</div><span class="logo-text">Mom Test Coach</span></div>
 
   <div class="progress" id="progress">
     <div class="progress-step active" id="ps1">1 · Context</div>
@@ -221,8 +230,7 @@
 </div>
 
 <script>
-  const API_BASE = "https://shreyas919-pmlens.hf.space";
-  fetch(`${API_BASE}/health`).catch(() => {});
+  const API_BASE = "http://localhost:8000";
   let state = { segment:"b2c", productIdea:"", targetCustomer:"", problemHypothesis:"", additionalContext:"", questions:[], numQuestions:15 };
   let excelFile = null;
 
@@ -287,12 +295,45 @@
   }
 
   function renderQuestions(data) {
-    const qs=data.questions, excerpts=data.book_excerpts_used||[];
-    let html=qs.map((q,i)=>`<div class="q-card">
+    const qs=data.questions||[], excerpts=data.book_excerpts_used||[];
+    const pitchQs=data.pitch_questions||[], pitchReveal=data.pitch_reveal||"";
+    const warnings=data.guardrail_warnings||[];
+    let html="";
+
+    // Guardrail warnings box
+    if(warnings.length){
+      html+=`<div class="guardrail-box"><div class="guardrail-label">🛡 Guardrails caught ${warnings.length} violation(s) — auto-removed</div>${warnings.map(w=>`<div>• ${w}</div>`).join("")}</div>`;
+    }
+
+    // Discovery questions
+    html+=qs.map((q,i)=>`<div class="q-card">
       ${q.category?`<div class="q-cat">${q.category}</div><br>`:""}
       <div class="q-num">Question ${i+1} of ${qs.length}</div>
       <div class="q-text">${q.q}</div>
       <div class="q-why">${q.why}</div></div>`).join("");
+
+    // Pitch section divider
+    if(pitchQs.length){
+      html+=`
+      <div class="pitch-divider">
+        <div class="pitch-divider-title">⚠️ PITCH SECTION — Use only AFTER completing all ${qs.length} discovery questions above</div>
+        <div class="pitch-divider-sub">Reveal the product now. Ask for commitment, not an opinion.</div>
+      </div>`;
+
+      if(pitchReveal){
+        html+=`<div class="pitch-reveal">
+          <div class="pitch-reveal-label">Step 1 — Reveal the product (read this aloud)</div>
+          <div class="pitch-reveal-text">"${pitchReveal}"</div>
+        </div>`;
+      }
+
+      html+=pitchQs.map((q,i)=>`<div class="pitch-q-card">
+        <div class="q-num">Pitch Question ${i+1} · ${q.purpose||""}</div>
+        <div class="q-text">${q.q}</div>
+        <div class="q-why">✓ Genuine interest: ${q.strong_signal||""}  ✕ Polite non-signal: ${q.weak_signal||""}</div>
+      </div>`).join("");
+    }
+
     if(excerpts.length){ html+=`<div class="divider"></div><div class="excerpt-box"><div class="excerpt-label">Book passages used</div>${excerpts.map(e=>`<p style="margin-bottom:8px">${e.slice(0,260)}…</p>`).join("")}</div>`; }
     document.getElementById("questionsContainer").innerHTML=html;
     buildManualAnswers();
@@ -362,8 +403,10 @@
     const violations=(r.mom_test_violations||[]).filter(v=>v&&v.toLowerCase()!=="none");
     const perCust=r.per_customer||[];
     const dotColor=s=>s==="strong"?"#3B6D11":s==="weak"?"#A32D2D":"#854F0B";
+    const sampleWarn=r.sample_warning||"";
 
     document.getElementById("reportContainer").innerHTML=`
+      ${sampleWarn?`<div class="sample-warning">⚠️ ${sampleWarn}</div>`:""}
       <div class="card" style="text-align:center">
         <div class="score-wrap"><div class="score-num">${score}</div><div class="score-label">out of 100 — ${r.num_customers?r.num_customers+" customers analyzed":"validation score"}</div></div>
         <div style="display:flex;justify-content:center"><div class="verdict-badge ${vClass}">${vEmoji} ${verdict} — ${r.verdict_reason||""}</div></div>
