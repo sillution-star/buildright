@@ -203,31 +203,37 @@ Relevant passages from The Mom Test book to ground your work:
 {book_context}
 </book_excerpts>
 
-STEP 1 — Read the product idea and any uploaded document. Privately break the product into the CORE ASSUMPTIONS it depends on to succeed (the beliefs that, if false, would make it fail). Do not output this list separately; instead attach the relevant assumption to each question.
+STEP 1 — Read the product idea, the problem hypothesis, and the uploaded document. Identify TWO things and keep them strictly separate:
+  (a) WHO the customer is — their identity/context (e.g. "owns a two-wheeler", "runs a small shop", "is a student"). This is ONLY background. Never interrogate the identity object itself.
+  (b) THE PROBLEM TERRITORIES — the real areas of the customer's life and behavior that this specific product is betting on. DERIVE these yourself from the product and hypothesis. Every product has different territories; extract whatever THIS product's are. If the user's problem hypothesis names specific things to focus on, prioritise those.
 
-STEP 2 — Build a structured interview that flows as a FUNNEL. Order the {n} questions across these stages, in this exact order (early stages first), so the interviewer moves naturally from broad to specific:
-  1. "Their World" — context about their life/role, zero assumptions
-  2. "Habits Today" — how they actually behave in this area right now
-  3. "Does the Problem Exist" — let the pain surface naturally, never assume it
-  4. "Past Behavior" — concrete past episodes, what they actually did
-  5. "Edge Cases" — the never-tried-it, the rejected, the won't-do-it customer
-  6. "Stakes" — how much this actually matters vs other priorities
+Your questions MUST dig into the PROBLEM TERRITORIES (b), using identity (a) only as light context. Do NOT interrogate the identity object (e.g. if they own a bike but the product is about credit, do not ask about the bike — ask about their money behavior).
 
-THE MOM TEST RULES — apply every one:
-- NEVER mention, name, or hint at the product or its features
-- NEVER ask "would you..." hypotheticals or "do you like..." compliment-bait
-- ALWAYS ask about real past behavior and concrete episodes
-- You MAY ask about real categories in their life (their actual past experiences, habits, purchases) — that is necessary
-- For B2C: simple, conversational, non-technical language an ordinary person speaks
+STEP 2 — Build a structured FUNNEL of {n} questions in this order:
+  1. "Their World" — light context about the relevant part of their life (1-2 questions max)
+  2. "Habits Today" — how they actually behave right now in the product's territory
+  3. "Does the Problem Exist" — surface the real pain naturally, never assume it
+  4. "Past Behavior" — concrete past episodes inside the problem territory (last time it happened, what they actually did)
+  5. "Edge Cases" — the never-did-it person, the tried-and-gave-up person, the would-refuse person
+  6. "Stakes" — how much this actually matters vs their other priorities
 
-STEP 3 — For EACH question provide a coaching card with these fields:
+COVERAGE RULE — across the {n} questions, make sure you probe EVERY core assumption the product depends on (the bets that, if false, kill the product). Derive these assumptions from the product yourself. Spread questions so each major assumption is tested by at least one question.
+
+THE MOM TEST RULES:
+- You MUST ask about the customer's REAL history and behavior in the problem territory — their actual past actions, purchases, attempts, workarounds. This is their life; asking is required.
+- What is FORBIDDEN is naming, describing, or pitching THE PRODUCT itself or its specific features/offer. Test the underlying behavior and need, never reveal the solution.
+- NEVER ask "would you..." hypotheticals or "do you like..." compliment-bait. Only real past/present behavior.
+- Avoid vague leading questions like "what challenges do you face" — always anchor to a specific past episode ("tell me about the last time...").
+- For B2C: simple, conversational language an ordinary person speaks. For B2B: the language of their actual work.
+
+STEP 3 — For EACH question provide a coaching card:
 - "q": the exact question the interviewer speaks
 - "category": one of "Their World" | "Habits Today" | "Does the Problem Exist" | "Past Behavior" | "Edge Cases" | "Stakes"
 - "order": integer 1..{n} giving the sequence to ask them in
-- "assumption": which product assumption this question secretly tests, in plain words
-- "strong_answer": what a STRONG real-signal answer sounds like (a concrete example sentence + why it's strong)
-- "weak_answer": what a WEAK / red-flag answer sounds like (a concrete example sentence + why it's a red flag)
-- "why": one line of Mom Test logic — why this question gets honest signal
+- "assumption": the SPECIFIC product bet this tests — concrete, never circular. (Good: "they will tolerate giving up X to get Y". Bad: "the customer has a need".)
+- "strong_answer": a concrete example answer that would VALIDATE the assumption + why it's strong
+- "weak_answer": a concrete example answer that would KILL the assumption + why it's a red flag
+- "why": one line of Mom Test logic
 
 Respond ONLY with a valid JSON array, ordered by "order". No preamble, no markdown fences.
 Format:
@@ -238,14 +244,15 @@ Format:
     user_msg = f"""Build a structured {n}-question Mom Test interview guide.
 
 Customer type: {req.segment.upper()}
-Target customer: {req.target_customer}
-Problem hypothesis: {req.problem_hypothesis}
+Customer IDENTITY (background only, do NOT interrogate this): {req.target_customer}
+Problem hypothesis / territories to focus on (steer your questions toward this): {req.problem_hypothesis}
 
-UPLOADED DOCUMENT (product context — read carefully to extract the real assumptions):
+UPLOADED DOCUMENT (product context — extract the real PROBLEM TERRITORIES and ASSUMPTIONS from here):
 {req.additional_context[:6000] or 'None provided'}
 
-Do NOT reveal or hint at the product idea: "{req.product_idea}"
-Make every question specific to THIS customer and THIS product's assumptions. Ground them in the book excerpts. Return them ordered as a funnel."""
+The product being validated (NEVER reveal or hint at it): "{req.product_idea}"
+
+Derive the problem territories and core assumptions from the product above — do not assume any fixed domain. Dig into the customer's real behavior in those territories, never their identity object, never the product itself. Ground every question in the book excerpts. Return ordered as a funnel."""
 
     raw = call_groq(system_prompt, user_msg, max_tokens=4000)
     data = parse_json_array(raw)
