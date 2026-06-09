@@ -222,8 +222,22 @@ COVERAGE RULE — across the {n} questions, make sure you probe EVERY core assum
 THE MOM TEST RULES:
 - You MUST ask about the customer's REAL history and behavior in the problem territory — their actual past actions, purchases, attempts, workarounds. This is their life; asking is required.
 - What is FORBIDDEN is naming, describing, or pitching THE PRODUCT itself or its specific features/offer. Test the underlying behavior and need, never reveal the solution.
-- NEVER ask "would you..." hypotheticals or "do you like..." compliment-bait. Only real past/present behavior.
-- Avoid vague leading questions like "what challenges do you face" — always anchor to a specific past episode ("tell me about the last time...").
+
+BANNED QUESTION TYPES — these fail the Mom Test. Do NOT produce any question like these:
+- Opinion/importance questions: "How important is X to you?", "What do you think is the most important factor in X?", "What's the most frustrating part of X?" → these invite opinions, not facts. BANNED.
+- Hypothetical/future questions: "What would you do if...?", "Would you ever...?", "How much could you afford to...?" → people lie about the future. BANNED.
+- Product-revealing questions: anything naming a feature of the solution (e.g. "secured card", "locked deposit to get credit"). BANNED.
+- Awareness/preference questions: "Have you ever considered X?", "What do you look for in X?" → BANNED.
+
+REQUIRED QUESTION SHAPE — every question must be a SPECIFIC PAST EPISODE:
+- Start most questions with "Tell me about the last time...", "Walk me through what happened when...", "The most recent time you... what did you do?"
+- Each question must extract a real story, not a judgment or a guess.
+
+NO REPETITION — this is critical:
+- Every one of the {n} questions must probe a DISTINCT moment, behavior, or assumption. 
+- Do NOT ask the same thing reworded (e.g. "frustrating part of managing finances" AND "frustrating part of using credit" AND "frustrating part of applying for credit" are the SAME question three times — NEVER do this).
+- Before finalising, mentally check: would any two questions get essentially the same answer? If yes, replace one with a question probing a different assumption or a different past episode.
+
 - For B2C: simple, conversational language an ordinary person speaks. For B2B: the language of their actual work.
 
 STEP 3 — For EACH question provide a coaching card:
@@ -252,7 +266,9 @@ UPLOADED DOCUMENT (product context — extract the real PROBLEM TERRITORIES and 
 
 The product being validated (NEVER reveal or hint at it): "{req.product_idea}"
 
-Derive the problem territories and core assumptions from the product above — do not assume any fixed domain. Dig into the customer's real behavior in those territories, never their identity object, never the product itself. Ground every question in the book excerpts. Return ordered as a funnel."""
+Derive the problem territories and core assumptions from the product above — do not assume any fixed domain. Dig into the customer's real behavior in those territories, never their identity object, never the product itself. Ground every question in the book excerpts. Return ordered as a funnel.
+
+FINAL CHECK before you respond: (1) every question is a specific PAST EPISODE, not an opinion or hypothetical; (2) no two questions would get the same answer; (3) no question names the product or its features. If any question fails, rewrite it."""
 
     raw = call_groq(system_prompt, user_msg, max_tokens=4000)
     data = parse_json_array(raw)
