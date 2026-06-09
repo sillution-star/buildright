@@ -99,7 +99,7 @@ def extract_pptx_text(data: bytes) -> str:
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[str]:
-    query_embedding = embedder.encode(query).tolist()
+    query_embedding = get_embedding(query)
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
