@@ -212,13 +212,30 @@ def call_llm(system: str, user: str, max_tokens: int = 4000) -> str:
 
 def parse_json_array(raw: str):
     clean = re.sub(r"```json|```", "", raw).strip()
+    # Try direct parse first
     try:
         return json.loads(clean)
     except Exception:
-        m = re.search(r"\[.*\]", clean, re.DOTALL)
-        if m:
+        pass
+    # Try extracting array
+    m = re.search(r"\[.*\]", clean, re.DOTALL)
+    if m:
+        try:
             return json.loads(m.group())
-        raise HTTPException(status_code=500, detail="Failed to parse LLM response")
+        except Exception:
+            pass
+    # Last resort: extract individual objects and build array manually
+    objects = re.findall(r'\{[^{}]*\}', clean, re.DOTALL)
+    if objects:
+        result = []
+        for obj in objects:
+            try:
+                result.append(json.loads(obj))
+            except Exception:
+                continue
+        if result:
+            return result
+    raise HTTPException(status_code=500, detail="Failed to parse LLM response")
 
 def parse_json_object(raw: str):
     clean = re.sub(r"```json|```", "", raw).strip()
