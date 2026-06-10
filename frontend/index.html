@@ -230,7 +230,7 @@
 </div>
 
 <script>
-  const API_BASE = "https://shreyas919-pmlens.hf.space";
+  const API_BASE = "http://localhost:8000";
   let state = { segment:"b2c", productIdea:"", targetCustomer:"", problemHypothesis:"", additionalContext:"", questions:[], numQuestions:15 };
   let excelFile = null;
 
@@ -296,13 +296,12 @@
 
   function renderQuestions(data) {
     const qs=data.questions||[], excerpts=data.book_excerpts_used||[];
-    const pitchQs=data.pitch_questions||[], pitchReveal=data.pitch_reveal||"";
     const warnings=data.guardrail_warnings||[];
     let html="";
 
-    // Guardrail warnings box
+    // Guardrail warnings — only show if something was actually caught
     if(warnings.length){
-      html+=`<div class="guardrail-box"><div class="guardrail-label">🛡 Guardrails caught ${warnings.length} violation(s) — auto-removed</div>${warnings.map(w=>`<div>• ${w}</div>`).join("")}</div>`;
+      html+=`<div class="guardrail-box"><div class="guardrail-label">🛡 Guardrails caught ${warnings.length} issue(s) — auto-removed</div>${warnings.map(w=>`<div>• ${w}</div>`).join("")}</div>`;
     }
 
     // Discovery questions
@@ -311,28 +310,6 @@
       <div class="q-num">Question ${i+1} of ${qs.length}</div>
       <div class="q-text">${q.q}</div>
       <div class="q-why">${q.why}</div></div>`).join("");
-
-    // Pitch section divider
-    if(pitchQs.length){
-      html+=`
-      <div class="pitch-divider">
-        <div class="pitch-divider-title">⚠️ PITCH SECTION — Use only AFTER completing all ${qs.length} discovery questions above</div>
-        <div class="pitch-divider-sub">Reveal the product now. Ask for commitment, not an opinion.</div>
-      </div>`;
-
-      if(pitchReveal){
-        html+=`<div class="pitch-reveal">
-          <div class="pitch-reveal-label">Step 1 — Reveal the product (read this aloud)</div>
-          <div class="pitch-reveal-text">"${pitchReveal}"</div>
-        </div>`;
-      }
-
-      html+=pitchQs.map((q,i)=>`<div class="pitch-q-card">
-        <div class="q-num">Pitch Question ${i+1} · ${q.purpose||""}</div>
-        <div class="q-text">${q.q}</div>
-        <div class="q-why">✓ Genuine interest: ${q.strong_signal||""}  ✕ Polite non-signal: ${q.weak_signal||""}</div>
-      </div>`).join("");
-    }
 
     if(excerpts.length){ html+=`<div class="divider"></div><div class="excerpt-box"><div class="excerpt-label">Book passages used</div>${excerpts.map(e=>`<p style="margin-bottom:8px">${e.slice(0,260)}…</p>`).join("")}</div>`; }
     document.getElementById("questionsContainer").innerHTML=html;

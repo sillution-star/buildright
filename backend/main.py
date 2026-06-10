@@ -72,36 +72,18 @@ class Question(BaseModel):
     weak_answer: str = ""
     order: int = 0
 
-class PitchQuestion(BaseModel):
-    q: str
-    purpose: str       # what this question tests
-    strong_signal: str # what a genuine interest signal sounds like
-    weak_signal: str   # what a polite non-signal sounds like
-    order: int = 0
-
 class GenerateQuestionsResponse(BaseModel):
     questions: list[Question]
-    pitch_questions: list[PitchQuestion]
-    pitch_reveal: str              # the one-sentence product reveal the SO reads aloud
-    guardrail_warnings: list[str]  # any violations caught and auto-fixed
+    guardrail_warnings: list[str]
     book_excerpts_used: list[str]
 
 
 # ── GUARDRAILS ─────────────────────────────────────────────────────────────
 
+# Only the two phrases that are ALWAYS wrong regardless of context
 BANNED_PHRASES = [
-    "would you", "will you", "do you like", "do you think",
-    "would you use", "would you pay", "do you want", "do you wish",
-    "is it important", "how important", "what do you think about",
-    "would you be interested", "do you believe", "would you consider",
-    "are you interested", "would you ever", "could you see yourself",
-    "what would you do if", "how would you feel",
-]
-
-PAST_BEHAVIOR_ANCHORS = [
-    "last time", "when did you", "walk me through", "tell me about a time",
-    "most recent", "how did you", "what did you do", "what happened when",
-    "describe a time", "give me an example", "the last time",
+    "do you like this",
+    "would you like this",
 ]
 
 PROMPT_INJECTION_PHRASES = [
@@ -111,61 +93,37 @@ PROMPT_INJECTION_PHRASES = [
 ]
 
 def check_prompt_injection(text: str) -> bool:
-    """Returns True if prompt injection detected."""
     t = text.lower()
     return any(phrase in t for phrase in PROMPT_INJECTION_PHRASES)
 
 def validate_question(q_text: str, product_idea: str) -> list[str]:
-    """Returns list of violations. Empty = passes."""
+    """Minimal guardrail — only catches the most obvious errors."""
     violations = []
     q_lower = q_text.lower()
 
-    # Check banned phrases
+    # Only catch the two always-wrong phrases
     for phrase in BANNED_PHRASES:
         if phrase in q_lower:
             violations.append(f"Banned phrase: '{phrase}'")
-            break  # one violation per question is enough
+            break
 
-    # Check for past-behavior anchor
-    has_anchor = any(anchor in q_lower for anchor in PAST_BEHAVIOR_ANCHORS)
-    if not has_anchor:
-        violations.append("No past-behavior anchor (missing: 'last time', 'walk me through', etc.)")
-
-    # Check minimum length
+    # Only remove questions that are too short to be useful
     if len(q_text.split()) < 8:
         violations.append("Question too short / vague")
 
-    # Check for product name reveal (words > 4 chars from product idea)
-    product_words = [w.lower().strip(".,?!") for w in product_idea.split() if len(w) > 4]
-    revealed = [w for w in product_words if w in q_lower]
-    if revealed:
-        violations.append(f"May reveal product (contains: {', '.join(revealed[:2])})")
-
-    # Check for hypothetical 'if' scenario
-    if q_lower.strip().startswith("if ") or " if you " in q_lower:
-        violations.append("Hypothetical 'if' scenario — asks about future, not past")
-
-    # Check minimum answer quality signal (answers under 15 words flagged later)
     return violations
 
-def validate_all_questions(questions: list, product_idea: str, max_bad: int = 3) -> tuple[list, list[str]]:
-    """
-    Runs every question past the guardrail checker.
-    Returns (cleaned_questions, warnings_for_user).
-    Questions with violations are flagged; if > max_bad fail, caller should regenerate.
-    """
+def validate_all_questions(questions: list, product_idea: str, max_bad: int = 3) -> tuple:
     clean = []
     warnings = []
     bad_count = 0
-
     for q in questions:
         violations = validate_question(q.q, product_idea)
         if violations:
             bad_count += 1
-            warnings.append(f"Q{q.order}: auto-flagged ({'; '.join(violations)}) — removed")
+            warnings.append(f"Q{q.order}: flagged ({'; '.join(violations)}) — removed")
         else:
             clean.append(q)
-
     return clean, warnings, bad_count
 
 def check_input_completeness(req) -> list[str]:
@@ -353,29 +311,11 @@ STEP 3 — For each discovery question provide:
 - "weak_answer": one concrete example of an answer that would kill this assumption, and why it's a red flag
 - "why": one sentence explaining the Mom Test logic behind this question
 
-STEP 4 — Generate a PITCH SECTION with exactly 3 questions. These are used ONLY AFTER all discovery questions are complete and the product has been revealed.
-
-Return the pitch section as:
-- "reveal": one sentence the interviewer reads aloud to reveal the product — frame it around the pain discovered, not as a sales pitch
-- "questions": 3 objects, each with "q", "purpose", "strong_signal", "weak_signal", "order"
-
-Pitch Q1 — probes prior search behavior: have they already looked for something like this?
-Pitch Q2 — probes social proof: who else do they know with this problem?
-Pitch Q3 — the commitment ask: can I take your number, would you want to be among the first?
-
-Respond ONLY with a single valid JSON object. No preamble, no markdown fences.
+Respond ONLY with a valid JSON array. No preamble, no markdown fences.
 Format:
-{{
-  "discovery": [
-    {{"q": "...", "category": "...", "order": 1, "assumption": "...", "strong_answer": "...", "weak_answer": "...", "why": "..."}}
-  ],
-  "pitch": {{
-    "reveal": "one sentence the interviewer speaks",
-    "questions": [
-      {{"q": "...", "purpose": "...", "strong_signal": "...", "weak_signal": "...", "order": 1}}
-    ]
-  }}
-}}"""
+[
+  {{"q": "...", "category": "...", "order": 1, "assumption": "...", "strong_answer": "...", "weak_answer": "...", "why": "..."}}
+]"""
 
     user_msg = f"""Build a {n}-question Mom Test interview guide for this product.
 
@@ -390,70 +330,41 @@ The product being validated (never reveal or hint at this): "{req.product_idea}"
 
 Read both the uploaded document and the product idea together. Extract the complete assumption map. Build questions that test each assumption through real past behavior. Make sure no two questions test the same thing."""
 
-    # ── LLM call with retry on too many guardrail failures ─────────────────
+    # ── LLM call with minimal guardrail check ──────────────────────────────
+    raw = call_llm(system_prompt, user_msg, max_tokens=4000)
+    data = parse_json_array(raw)
+    data.sort(key=lambda i: i.get("order", 0))
+
     all_warnings = []
     questions = []
-    pitch_questions = []
-    pitch_reveal = ""
-
-    for attempt in range(2):  # max 2 attempts
-        raw = call_llm(system_prompt, user_msg, max_tokens=4500)
-        parsed = parse_json_object(raw)
-
-        discovery_raw = parsed.get("discovery", [])
-        pitch_raw = parsed.get("pitch", {})
-
-        # Build question objects
-        discovery_raw.sort(key=lambda i: i.get("order", 0))
-        candidate_questions = []
-        for idx, i in enumerate(discovery_raw, 1):
-            insight_parts = []
-            if i.get("assumption"):
-                insight_parts.append(f"🎯 Tests: {i['assumption']}")
-            if i.get("strong_answer"):
-                insight_parts.append(f"✓ Strong: {i['strong_answer']}")
-            if i.get("weak_answer"):
-                insight_parts.append(f"✕ Red flag: {i['weak_answer']}")
-            if i.get("why"):
-                insight_parts.append(f"— {i['why']}")
-            combined_why = "  ".join(insight_parts) if insight_parts else i.get("why", "")
-            candidate_questions.append(Question(
-                q=i["q"],
-                why=combined_why,
-                category=i.get("category", ""),
-                assumption=i.get("assumption", ""),
-                strong_answer=i.get("strong_answer", ""),
-                weak_answer=i.get("weak_answer", ""),
-                order=i.get("order", idx),
-            ))
-
-        # ── GUARDRAIL: Run banned-phrase + past-behavior checks ──────────
-        clean_qs, warnings, bad_count = validate_all_questions(candidate_questions, req.product_idea)
-        all_warnings.extend(warnings)
-
-        if bad_count <= 2 or attempt == 1:
-            # Accept what we have (either good enough, or second attempt)
-            questions = clean_qs if clean_qs else candidate_questions
-            break
-        # else: retry with stricter tone in user message
-        user_msg += "\n\nIMPORTANT: Previous attempt had questions violating Mom Test rules. Every question MUST start with 'Tell me about the last time' or 'Walk me through'. No exceptions."
-
-    # Build pitch section
-    pitch_reveal = pitch_raw.get("reveal", "")
-    for pq in pitch_raw.get("questions", []):
-        pitch_questions.append(PitchQuestion(
-            q=pq.get("q", ""),
-            purpose=pq.get("purpose", ""),
-            strong_signal=pq.get("strong_signal", ""),
-            weak_signal=pq.get("weak_signal", ""),
-            order=pq.get("order", 0),
-        ))
-    pitch_questions.sort(key=lambda x: x.order)
+    for idx, i in enumerate(data, 1):
+        insight_parts = []
+        if i.get("assumption"):
+            insight_parts.append(f"🎯 Tests: {i['assumption']}")
+        if i.get("strong_answer"):
+            insight_parts.append(f"✓ Strong: {i['strong_answer']}")
+        if i.get("weak_answer"):
+            insight_parts.append(f"✕ Red flag: {i['weak_answer']}")
+        if i.get("why"):
+            insight_parts.append(f"— {i['why']}")
+        combined_why = "  ".join(insight_parts) if insight_parts else i.get("why", "")
+        q = Question(
+            q=i["q"],
+            why=combined_why,
+            category=i.get("category", ""),
+            assumption=i.get("assumption", ""),
+            strong_answer=i.get("strong_answer", ""),
+            weak_answer=i.get("weak_answer", ""),
+            order=i.get("order", idx),
+        )
+        violations = validate_question(q.q, req.product_idea)
+        if violations:
+            all_warnings.append(f"Q{idx}: flagged ({'; '.join(violations)}) — removed")
+        else:
+            questions.append(q)
 
     return GenerateQuestionsResponse(
         questions=questions,
-        pitch_questions=pitch_questions,
-        pitch_reveal=pitch_reveal,
         guardrail_warnings=all_warnings,
         book_excerpts_used=book_chunks[:2],
     )
