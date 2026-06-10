@@ -323,12 +323,18 @@ Customer type: {req.segment.upper()}
 Who the customer is (background only — do not interrogate this): {req.target_customer}
 What to validate (steer every question toward these assumptions): {req.problem_hypothesis}
 
-UPLOADED DOCUMENT — read this carefully, it contains the product detail and customer data:
+PRIMARY SOURCE — read this document carefully. It contains the real product detail, data, and context. Extract every assumption the product is betting on from here — the specific bets that would kill the product if false. Use these to build your questions.
+
+Critical rule: the document's specific numbers, feature names, and product terms must NEVER appear in the questions. They inform what assumptions to test — the questions then test the customer's past behavior around those assumptions. The product stays hidden. The behavior reveals the truth.
+
 {req.additional_context[:6000] or 'No document uploaded — rely on product idea and hypothesis only.'}
+
+FOCUS AREAS — additionally steer questions toward these assumptions:
+{req.problem_hypothesis}
 
 The product being validated (never reveal or hint at this): "{req.product_idea}"
 
-Read both the uploaded document and the product idea together. Extract the complete assumption map. Build questions that test each assumption through real past behavior. Make sure no two questions test the same thing."""
+Extract the full assumption map from the document. Build questions that test each assumption through the customer's real past behavior. No two questions should test the same thing."""
 
     # ── LLM call with minimal guardrail check ──────────────────────────────
     raw = call_llm(system_prompt, user_msg, max_tokens=4000)
