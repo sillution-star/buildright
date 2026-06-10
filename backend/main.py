@@ -19,9 +19,8 @@ from pathlib import Path
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 HF_API_KEY = os.environ["HF_API_KEY"]
@@ -232,30 +231,26 @@ def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[str]:
     return [r["content"] for r in resp.json()]
 
 
-# ── Groq ──────────────────────────────────────────────────────────────────────
+# ── LLM ───────────────────────────────────────────────────────────────────────
 def call_llm(system: str, user: str, max_tokens: int = 4000) -> str:
-    """Call Google Gemini 2.0 Flash — 1M TPM free tier."""
-    payload = {
-        "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": max_tokens,
-        },
-    }
+    """Call Groq Llama 4 Scout — 30,000 TPM free tier."""
     resp = httpx.post(
-        GEMINI_URL,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.3,
+            "max_tokens": max_tokens,
+        },
         timeout=60,
     )
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Gemini error: {resp.text}")
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError) as e:
-        raise HTTPException(status_code=502, detail=f"Gemini parse error: {data}")
+        raise HTTPException(status_code=502, detail=f"Groq error: {resp.text}")
+    return resp.json()["choices"][0]["message"]["content"]
 
 def parse_json_array(raw: str):
     clean = re.sub(r"```json|```", "", raw).strip()
@@ -281,7 +276,7 @@ def parse_json_object(raw: str):
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": GEMINI_MODEL}
+    return {"status": "ok", "model": GROQ_MODEL}
 
 
 @app.post("/extract-file")
