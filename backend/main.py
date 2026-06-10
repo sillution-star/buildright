@@ -19,13 +19,14 @@ from pathlib import Path
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
 
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 HF_API_KEY = os.environ["HF_API_KEY"]
 HF_EMBEDDING_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-TOP_K = 6
+TOP_K = 8
 
 app = FastAPI(title="Mom Test Coach API")
 
@@ -232,24 +233,29 @@ def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[str]:
 
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
-def call_groq(system: str, user: str, max_tokens: int = 2500) -> str:
-    resp = httpx.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+def call_llm(system: str, user: str, max_tokens: int = 4000) -> str:
+    """Call Google Gemini 2.0 Flash — 1M TPM free tier."""
+    payload = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {
             "temperature": 0.3,
-            "max_tokens": max_tokens,
+            "maxOutputTokens": max_tokens,
         },
-        timeout=45,
+    }
+    resp = httpx.post(
+        GEMINI_URL,
+        params={"key": GEMINI_API_KEY},
+        json=payload,
+        timeout=60,
     )
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Groq error: {resp.text}")
-    return resp.json()["choices"][0]["message"]["content"]
+        raise HTTPException(status_code=502, detail=f"Gemini error: {resp.text}")
+    data = resp.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as e:
+        raise HTTPException(status_code=502, detail=f"Gemini parse error: {data}")
 
 def parse_json_array(raw: str):
     clean = re.sub(r"```json|```", "", raw).strip()
@@ -275,7 +281,7 @@ def parse_json_object(raw: str):
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": GROQ_MODEL}
+    return {"status": "ok", "model": GEMINI_MODEL}
 
 
 @app.post("/extract-file")
@@ -313,70 +319,54 @@ def generate_questions(req: GenerateQuestionsRequest):
     book_chunks = retrieve_chunks(rag_query, top_k=TOP_K)
     book_context = "\n\n---\n\n".join(book_chunks)
 
-    system_prompt = f"""You are a world-class customer discovery coach with deep knowledge of The Mom Test by Rob Fitzpatrick. You design structured interview guides that a non-expert field interviewer can follow top-to-bottom.
+    system_prompt = f"""You are an experienced product researcher who has deeply studied The Mom Test by Rob Fitzpatrick. Your job is to design structured customer interview guides that any field interviewer can follow — even without research training.
 
-Relevant passages from The Mom Test book to ground your work:
+Here are the most relevant passages from The Mom Test book to ground your questions:
 
 <book_excerpts>
 {book_context}
 </book_excerpts>
 
-STEP 1 — Read the product idea, the problem hypothesis, and the uploaded document. Identify TWO things and keep them strictly separate:
-  (a) WHO the customer is — their identity/context. This is ONLY background. Never interrogate the identity object itself.
-  (b) THE PROBLEM TERRITORIES — the real areas of the customer's life and behavior that this specific product is betting on. DERIVE these yourself from the product and hypothesis.
+STEP 1 — Read BOTH the uploaded product document AND the product idea and hypothesis together before doing anything else.
+- The uploaded document gives you the product detail, data, features, and customer context.
+- The product idea and hypothesis tells you what the PM thinks is at risk and what they want to validate.
+- Synthesize both to build a complete picture of: who the customer is, what the product is betting on, and which assumptions could kill it if false.
+- Separate WHO the customer is (background context only — never interrogate this) from WHAT the product's core assumptions are (the real territory to dig into).
 
-Your questions MUST dig into the PROBLEM TERRITORIES (b), using identity (a) only as light context.
+STEP 2 — Build a structured interview of {n} questions that flows as a natural conversation, moving from broad to specific:
+  1. "Their World" — 1-2 questions about the relevant part of their life. Easy, no pressure.
+  2. "Habits Today" — how they actually behave in the product's territory right now.
+  3. "Does the Problem Exist" — let the pain surface naturally. Do not assume it exists.
+  4. "Past Behavior" — real past episodes that reveal whether the pain is genuine and costly.
+  5. "Edge Cases" — the person who never felt the problem, the one who tried and gave up, the one who would refuse the solution.
+  6. "Stakes" — how much this actually matters versus their other priorities.
 
-STEP 2 — Build a structured FUNNEL of {n} questions in this order:
-  1. "Their World" — light context about the relevant part of their life (1-2 questions max)
-  2. "Habits Today" — how they actually behave right now in the product's territory
-  3. "Does the Problem Exist" — surface the real pain naturally, never assume it
-  4. "Past Behavior" — concrete past episodes inside the problem territory
-  5. "Edge Cases" — the never-did-it, the tried-and-gave-up, the would-refuse person
-  6. "Stakes" — how much this actually matters vs their other priorities
+Every question must be about real behavior the customer has already shown — not what they might do, not what they think, not what they prefer. Real stories from their past are the only honest signal.
 
-COVERAGE RULE — spread questions so each major product assumption is tested by at least one question.
+The two things you must never do:
+- Ask hypothetical future questions ("would you," "will you," "do you like") — people lie about the future to be polite.
+- Name, describe, or hint at the product being validated — the moment they know what you're testing, they start being helpful instead of honest.
 
-THE MOM TEST RULES:
-- You MUST ask about real past history and behavior in the problem territory.
-- NEVER name, describe, or pitch THE PRODUCT or its features.
+Every question should probe a distinct assumption. Before finalising, check: would any two questions get essentially the same answer? If yes, replace one.
 
-BANNED QUESTION TYPES (strictly forbidden):
-- "How important is X?", "What do you think is the most important...?", "What's the most frustrating part?" → opinion, not fact. BANNED.
-- "What would you do if...?", "Would you ever...?", "How much could you afford to...?" → hypothetical future. BANNED.
-- Anything naming a solution feature. BANNED.
-- "Have you ever considered X?", "What do you look for in X?" → awareness/preference. BANNED.
-
-REQUIRED SHAPE — every question must be a SPECIFIC PAST EPISODE:
-- Start with "Tell me about the last time...", "Walk me through what happened when...", "The most recent time you... what did you do?"
-
-NO REPETITION — every question probes a DISTINCT behavior or assumption. Before finalising mentally check: would any two questions get essentially the same answer? If yes, replace one.
-
-STEP 3 — For EACH discovery question provide:
-- "q": exact question text
-- "category": one of "Their World"|"Habits Today"|"Does the Problem Exist"|"Past Behavior"|"Edge Cases"|"Stakes"
+STEP 3 — For each discovery question provide:
+- "q": the exact question the interviewer speaks
+- "category": one of "Their World" | "Habits Today" | "Does the Problem Exist" | "Past Behavior" | "Edge Cases" | "Stakes"
 - "order": integer 1..{n}
-- "assumption": specific product bet this tests (concrete, never circular)
-- "strong_answer": concrete example of a validating answer + why it's strong
-- "weak_answer": concrete example of a killing answer + why it's a red flag
-- "why": one line of Mom Test logic
+- "assumption": the specific product bet this question tests — be concrete. Not "they have a need" but "they will part with ₹2,000 they cannot touch to get credit access."
+- "strong_answer": one concrete example of an answer that would validate this assumption, and why it's strong signal
+- "weak_answer": one concrete example of an answer that would kill this assumption, and why it's a red flag
+- "why": one sentence explaining the Mom Test logic behind this question
 
-STEP 4 — Also generate a PITCH SECTION with exactly 3 questions to use ONLY AFTER all discovery questions are complete.
-These questions are asked AFTER revealing the product in one sentence.
-Return the pitch section as a separate JSON key "pitch" with:
-- "reveal": the exact one-sentence product reveal the SO reads aloud (frame it around the pain discovered, not a sales pitch)
-- "questions": array of 3 objects with:
-  - "q": the exact question
-  - "purpose": what genuine interest signal this tests
-  - "strong_signal": what a real interest response sounds like
-  - "weak_signal": what a polite non-signal sounds like
-  - "order": 1, 2, or 3
+STEP 4 — Generate a PITCH SECTION with exactly 3 questions. These are used ONLY AFTER all discovery questions are complete and the product has been revealed.
 
-Pitch Q1 must probe prior search behavior (have they already looked for this?).
-Pitch Q2 must probe social proof (who else do they know with this problem?).
-Pitch Q3 must be a commitment ask (can I take your number / would you want to be first to try it?).
+Return the pitch section as:
+- "reveal": one sentence the interviewer reads aloud to reveal the product — frame it around the pain discovered, not as a sales pitch
+- "questions": 3 objects, each with "q", "purpose", "strong_signal", "weak_signal", "order"
 
-FINAL CHECK: (1) every discovery question is a past episode, not opinion/hypothetical; (2) no two questions get the same answer; (3) no question names the product; (4) pitch section is clearly separate from discovery.
+Pitch Q1 — probes prior search behavior: have they already looked for something like this?
+Pitch Q2 — probes social proof: who else do they know with this problem?
+Pitch Q3 — the commitment ask: can I take your number, would you want to be among the first?
 
 Respond ONLY with a single valid JSON object. No preamble, no markdown fences.
 Format:
@@ -385,25 +375,25 @@ Format:
     {{"q": "...", "category": "...", "order": 1, "assumption": "...", "strong_answer": "...", "weak_answer": "...", "why": "..."}}
   ],
   "pitch": {{
-    "reveal": "one sentence the SO speaks to reveal the product",
+    "reveal": "one sentence the interviewer speaks",
     "questions": [
       {{"q": "...", "purpose": "...", "strong_signal": "...", "weak_signal": "...", "order": 1}}
     ]
   }}
 }}"""
 
-    user_msg = f"""Build a structured {n}-question Mom Test interview guide + pitch section.
+    user_msg = f"""Build a {n}-question Mom Test interview guide for this product.
 
 Customer type: {req.segment.upper()}
-Customer IDENTITY (background only): {req.target_customer}
-Problem hypothesis / focus: {req.problem_hypothesis}
+Who the customer is (background only — do not interrogate this): {req.target_customer}
+What to validate (steer every question toward these assumptions): {req.problem_hypothesis}
 
-UPLOADED DOCUMENT:
-{req.additional_context[:6000] or 'None provided'}
+UPLOADED DOCUMENT — read this carefully, it contains the product detail and customer data:
+{req.additional_context[:6000] or 'No document uploaded — rely on product idea and hypothesis only.'}
 
-Product (NEVER reveal): "{req.product_idea}"
+The product being validated (never reveal or hint at this): "{req.product_idea}"
 
-FINAL CHECK before responding: (1) every question is a specific past episode; (2) no two questions get the same answer; (3) no question names the product or its features. If any fails, rewrite it."""
+Read both the uploaded document and the product idea together. Extract the complete assumption map. Build questions that test each assumption through real past behavior. Make sure no two questions test the same thing."""
 
     # ── LLM call with retry on too many guardrail failures ─────────────────
     all_warnings = []
@@ -412,7 +402,7 @@ FINAL CHECK before responding: (1) every question is a specific past episode; (2
     pitch_reveal = ""
 
     for attempt in range(2):  # max 2 attempts
-        raw = call_groq(system_prompt, user_msg, max_tokens=4500)
+        raw = call_llm(system_prompt, user_msg, max_tokens=4500)
         parsed = parse_json_object(raw)
 
         discovery_raw = parsed.get("discovery", [])
@@ -651,35 +641,42 @@ async def analyze_excel(file: UploadFile = File(...)):
         for item in qa:
             transcript += f"[weight {item['weight']}] Q: {item['q']}\nA: {item['a']}\n"
 
-    system_prompt = f"""You are a ruthlessly objective customer validation analyst trained on The Mom Test by Rob Fitzpatrick.
+    system_prompt = f"""You are an experienced product researcher who has deeply studied The Mom Test by Rob Fitzpatrick. A PM has just run customer interviews and needs an honest read of what the evidence shows.
 
-Relevant book passages to ground your analysis:
+Your job is to read these interview answers and tell the PM what the data actually says — not what they want to hear. Be fair, be specific, and cite the actual answers that support each claim you make.
+
+Here are relevant passages from The Mom Test to ground your analysis:
 <book_excerpts>
 {book_context}
 </book_excerpts>
 
-You will receive interview answers from MULTIPLE customers, each question carrying a weightage.
-For EACH customer, judge evidence quality (real specific pain, frequency, current workarounds, willingness to act). Weight higher-weightage questions more.
-Then produce an AGGREGATE view across all customers.
+HOW TO JUDGE EACH ANSWER:
+- A strong answer describes a real past episode with specifics: what happened, when, what they did, what it cost them. It has friction, emotion, or a workaround. This is real signal.
+- A weak answer is vague, abstract, or future-tense: "I guess I'd use something like that" or "credit cards are useful." This is noise, not signal.
+- A violation is an answer that sounds positive but contains no behavioral evidence — compliments dressed as data.
 
 SCORING (0-100):
-- 75-100 GO: most customers show real, frequent, costly pain with active workarounds
-- 50-74 PIVOT: mixed; some signal but key assumptions unproven
-- 0-49 NO-GO: mostly polite noise, no real pain, no workarounds
+- 75-100 GO: most customers described real, specific, recurring pain with evidence of workarounds or active attempts to solve it
+- 50-74 PIVOT: some real signal but key assumptions are unproven or split across customers
+- 0-49 NO-GO: mostly vague or polite answers with no behavioral evidence of real pain
+
+For EACH customer, identify which of their answers were genuine evidence and which were noise. Quote the specific answer text that drove your score.
+
+Then give an aggregate view across all customers.
 
 Respond ONLY with valid JSON, no markdown fences:
 {{
   "aggregate_score": <0-100>,
   "verdict": "<GO|PIVOT|NO-GO>",
-  "verdict_reason": "<2 sentences>",
+  "verdict_reason": "<2 sentences — cite specific evidence from the answers>",
   "per_customer": [
-    {{"name": "Customer 1", "score": <0-100>, "signal": "<strong|medium|weak>", "summary": "<1 sentence>"}}
+    {{"name": "Customer 1", "score": <0-100>, "signal": "<strong|medium|weak>", "summary": "<1 sentence citing what they actually said>"}}
   ],
-  "strong_signals": ["<pattern across customers>"],
-  "weak_signals": ["<concern or gap>"],
-  "mom_test_violations": ["<answers that look like politeness, not evidence>"],
-  "next_questions": ["<sharper follow-up for next round>"],
-  "recommendation": "<3-4 sentences: what to do next>"
+  "strong_signals": ["<specific pattern seen across customers — quote the answers that showed it>"],
+  "weak_signals": ["<specific concern — cite which customers and what they said>"],
+  "mom_test_violations": ["<answers that were compliments not evidence — quote them>"],
+  "next_questions": ["<sharper follow-up question to test what this round left unresolved>"],
+  "recommendation": "<3-4 sentences — what to do next and why, grounded in what you just read>"
 }}"""
 
     user_msg = f"""Product idea (NOT shown to customers): {meta_ctx['product_idea']}
@@ -691,7 +688,7 @@ Interview transcript across {len(customers)} customers:
 
 Score each customer and give the aggregate. Ground analysis in the book excerpts."""
 
-    raw = call_groq(system_prompt, user_msg, max_tokens=2500)
+    raw = call_llm(system_prompt, user_msg, max_tokens=2500)
     report = parse_json_object(raw)
     report["num_customers"] = len(customers)
     report["book_excerpts_used"] = book_chunks[:2]
@@ -726,14 +723,19 @@ def analyze_manual(req: AnalyzeManualRequest):
 
     transcript = "\n".join(f"Q: {a.q}\nA: {a.a}" for a in answered)
 
-    system_prompt = f"""You are a ruthlessly objective customer validation analyst trained on The Mom Test by Rob Fitzpatrick.
+    system_prompt = f"""You are an experienced product researcher who has deeply studied The Mom Test by Rob Fitzpatrick. A PM has just run a customer interview and needs an honest read of what the evidence shows.
 
-Relevant book passages:
+Your job is to read these answers and tell the PM what the data actually says. Be specific. Cite the actual answer text that supports each claim.
+
+Here are relevant passages from The Mom Test to ground your analysis:
 <book_excerpts>
 {book_context}
 </book_excerpts>
 
-Score this single customer's interview for evidence quality: real specific pain, frequency, current workarounds, willingness to act.
+HOW TO JUDGE EACH ANSWER:
+- Strong: describes a real past episode with specifics — what happened, what it cost, what they did about it. Real signal.
+- Weak: vague, abstract, or future-tense — "I guess I would" or "that sounds useful." Noise, not signal.
+- Violation: sounds positive but contains no behavioral evidence. Compliment dressed as data.
 
 SCORING (0-100): 75-100 GO, 50-74 PIVOT, 0-49 NO-GO.
 
@@ -741,13 +743,13 @@ Respond ONLY with valid JSON, no markdown fences:
 {{
   "aggregate_score": <0-100>,
   "verdict": "<GO|PIVOT|NO-GO>",
-  "verdict_reason": "<2 sentences>",
-  "per_customer": [{{"name": "This customer", "score": <0-100>, "signal": "<strong|medium|weak>", "summary": "<1 sentence>"}}],
-  "strong_signals": ["..."],
-  "weak_signals": ["..."],
-  "mom_test_violations": ["<answers that look like politeness, not evidence>"],
-  "next_questions": ["..."],
-  "recommendation": "<3-4 sentences>"
+  "verdict_reason": "<2 sentences — cite specific answer text>",
+  "per_customer": [{{"name": "This customer", "score": <0-100>, "signal": "<strong|medium|weak>", "summary": "<1 sentence citing what they actually said>"}}],
+  "strong_signals": ["<what they said that was genuine evidence — quote it>"],
+  "weak_signals": ["<what was missing or unconvincing — be specific>"],
+  "mom_test_violations": ["<answers that were compliments not evidence — quote them>"],
+  "next_questions": ["<sharper question to test what this interview left unresolved>"],
+  "recommendation": "<3-4 sentences grounded in what you just read>"
 }}"""
 
     user_msg = f"""Product idea (NOT shown to customer): {req.product_idea}
@@ -759,7 +761,7 @@ Interview:
 
 Score this customer. Ground analysis in the book excerpts."""
 
-    raw = call_groq(system_prompt, user_msg, max_tokens=1800)
+    raw = call_llm(system_prompt, user_msg, max_tokens=1800)
     report = parse_json_object(raw)
     report["num_customers"] = 1
     report["book_excerpts_used"] = book_chunks[:2]
